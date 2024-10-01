@@ -25,13 +25,19 @@ class ParameterizedImage(nn.Module):
 # function where we perform forward pass, extract average activation (as a single number) and return negation of it
 # negation because we have to _maximize_ the objective and _minimize_ the loss
 # so if loss will go from 15 to 7 (lowering), objective will go from -15 to -7 (growing)
-def visualize_naive(model, image, activation, channel_nr, regularizers, transformations, **params):
+def visualize(model, image, activation, channel_nr, regularizers, transformations):
     image_params = image()
-    model(image_params)  # Forward pass
+
+    if transformations is None:
+        transformations = nn.Identity() # no-op
+
+    transformed_image = transformations(image_params)
+
+    model(transformed_image)  # Forward pass
     loss = -activation['target'][0, channel_nr].mean()
 
     for reg in regularizers:
-        loss += reg['weight'] + reg['func'](image_params)
+        loss += reg['weight'] * reg['func'](image_params)
 
     loss.backward()
     return loss.item()
@@ -44,10 +50,9 @@ def render_vis(
         image,
         regularizers=[],
         transformations=None,
-        visualize=visualize_naive,
+        visualize=visualize,
         num_iterations=2560,
-        device='cpu',
-        **_visualize_params):
+        device='cpu'):
     layer, branch, channel_nr = tuple(channel.split(':'))
     channel_nr = int(channel_nr)
 
@@ -75,7 +80,7 @@ def render_vis(
     pbar = tqdm(range(num_iterations), total=num_iterations)
     for i in pbar:
         optimizer.zero_grad()
-        loss = visualize(model, image, activation, channel_nr, regularizers, transformations, **_visualize_params)
+        loss = visualize(model, image, activation, channel_nr, regularizers, transformations)
         optimizer.step()
 
         pbar.set_postfix({'loss': f'{loss:.4f}'})
