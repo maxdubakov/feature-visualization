@@ -7,41 +7,27 @@ random.seed(0)
 
 
 class TransformationRobustness(nn.Module):
-    def __init__(self, pad_size=16, pad_mode='reflect', jitter_size=16, scale_factors=None, angles=None):
+    def __init__(self, transformations):
         super(TransformationRobustness, self).__init__()
-        if angles is None:
-            angles = [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5]
-        if scale_factors is None:
-            scale_factors = [1, 0.975, 1.025, 0.95, 1.05]
-        self.pad_size = pad_size
-        self.pad_mode = pad_mode
-        self.jitter_size = jitter_size
-        self.scale_factors = scale_factors
-        self.angles = angles
+        self.transformations = transformations
 
     def forward(self, x):
-        # Apply padding
-        x = self._pad_image(x)
-
-        x = self._jitter(x)
-
-        x = self._random_scale(x)
-
-        x = self._random_rotate(x)
-
-        x = self._jitter(x, self.jitter_size // 2)
-
-        x = self._crop_padding(x)
-
+        for transformation in self.transformations:
+            x = transformation(x)
         return x
 
-    def _pad_image(self, x):
-        padding = (self.pad_size, self.pad_size, self.pad_size, self.pad_size)
-        return F.pad(x, padding, mode=self.pad_mode)
 
-    def _jitter(self, x, jitter_size=None):
-        if jitter_size is None:
-            jitter_size = self.jitter_size
+# I really like the idea with inner once I got why we do it...
+def pad_image(pad_size=16, pad_mode='reflect'):
+    def inner(x):
+        padding = (pad_size, pad_size, pad_size, pad_size)
+        return F.pad(x, padding, mode=pad_mode)
+
+    return inner
+
+
+def jitter(jitter_size=None):
+    def inner(x):
         batch_size, channels, height, width = x.size()
         crop_height = height - jitter_size
         crop_width = width - jitter_size
@@ -56,8 +42,16 @@ class TransformationRobustness(nn.Module):
 
         return torch.cat(crops, dim=0)
 
-    def _random_scale(self, x):
-        scale = random.choice(self.scale_factors)
+    return inner
+
+
+def random_scale(scale_factors=None):
+    if scale_factors is None:
+        scale_factors = [1, 0.975, 1.025, 0.95, 1.05]
+
+    def inner(x):
+
+        scale = random.choice(scale_factors)
 
         batch_size, channels, height, width = x.size()
         new_height = int(height * scale)
@@ -67,9 +61,16 @@ class TransformationRobustness(nn.Module):
         x_scaled = F.interpolate(x, size=(new_height, new_width), mode='bilinear', align_corners=False)
 
         return x_scaled
+    return inner
 
-    def _random_rotate(self, x):
-        angle = random.choice(self.angles)
+
+def random_rotate(angles=None):
+    if angles is None:
+        angles = [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5]
+
+    def inner(x):
+
+        angle = random.choice(angles)
 
         # Convert angle to radians
         angle_rad = torch.tensor(angle * (3.14159 / 180))
@@ -90,18 +91,24 @@ class TransformationRobustness(nn.Module):
 
         return x_rotated
 
-    def _crop_padding(self, x):
-        """
-        Crop the padding added to the image.
+    return inner
 
-        Args:
-        x (torch.Tensor): Input tensor of shape (batch_size, channels, height, width)
 
-        Returns:
-        torch.Tensor: Cropped tensor with padding removed
-        """
-        if self.pad_size == 0:
+def crop_padding(pad_size=16):
+    """
+    Crop the padding added to the image.
+
+    Args:
+    x (torch.Tensor): Input tensor of shape (batch_size, channels, height, width)
+
+    Returns:
+    torch.Tensor: Cropped tensor with padding removed
+    """
+    def inner(x):
+        if pad_size == 0:
             return x
 
         _, _, height, width = x.size()
-        return x[:, :, self.pad_size:height - self.pad_size, self.pad_size:width - self.pad_size]
+        return x[:, :, pad_size:height - pad_size, pad_size:width - pad_size]
+
+    return inner
