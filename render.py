@@ -2,12 +2,22 @@ import torch
 import numpy as np
 from tqdm import tqdm
 import torch.nn as nn
-import torchvision.models as models
 from torchvision.models import GoogLeNet_Weights
+
+from model import googlenet
+
+global_step = 0
 
 
 def pixel_image(shape, sd=0.01):
     return np.random.normal(size=shape, scale=sd).astype(np.float32)
+
+
+def scale_input(image, image_value_range=(-117, 255-117)):
+    lo, hi = image_value_range
+    image = lo + image * (hi - lo)
+
+    return image
 
 
 class ParameterizedImage(nn.Module):
@@ -16,10 +26,11 @@ class ParameterizedImage(nn.Module):
         h = h or w
         shape = [batch, channels, h, w]
         init_val = pixel_image(shape, sd=sd)
-        self.param = nn.Parameter(torch.tensor(init_val))
+        normalized_init_val = scale_input(torch.sigmoid(torch.tensor(init_val)))
+        self.param = nn.Parameter(normalized_init_val)
 
     def forward(self):
-        return torch.sigmoid(self.param)
+        return self.param
 
 
 # function where we perform forward pass, extract average activation (as a single number) and return negation of it
@@ -53,11 +64,14 @@ def render_vis(
         visualize=visualize,
         num_iterations=2560,
         device='cpu'):
+    global global_step
+    global_step = 0
+
     layer, branch, channel_nr = tuple(channel.split(':'))
     channel_nr = int(channel_nr)
 
     # init the model
-    model = models.googlenet(weights=GoogLeNet_Weights.IMAGENET1K_V1).eval()
+    model = googlenet(weights=GoogLeNet_Weights.IMAGENET1K_V1).eval()
     model.to(device)
 
     target_layer = getattr(model, layer)
@@ -71,9 +85,9 @@ def render_vis(
         return hook
 
     if int(branch[-1]) > 1:
-        getattr(target_layer, branch)[1].conv.register_forward_hook(get_activation())
+        getattr(target_layer, branch)[1].bn.register_forward_hook(get_activation())
     else:
-        getattr(target_layer, branch).conv.register_forward_hook(get_activation())
+        getattr(target_layer, branch).bn.register_forward_hook(get_activation())
 
     thresholds = [1, 32, 128, 256, 2048, 2559]
     images = []
@@ -84,6 +98,7 @@ def render_vis(
         optimizer.step()
 
         pbar.set_postfix({'loss': f'{loss:.4f}'})
+        global_step += 1
 
         if i in thresholds:
             img_np = (image()
