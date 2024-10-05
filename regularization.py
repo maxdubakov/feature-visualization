@@ -4,14 +4,14 @@ import torch.nn.functional as F
 
 
 def total_variation(img):
-    bs_img, c_img, h_img, w_img = img.size()
+    # bs_img, c_img, h_img, w_img = img.size()
     tv_h = torch.sum(torch.abs(img[:, :, 1:, :] - img[:, :, :-1, :]))
     tv_w = torch.sum(torch.abs(img[:, :, :, 1:] - img[:, :, :, :-1]))
-    return (tv_h + tv_w) / (bs_img * c_img * h_img * w_img)
+    return tv_h + tv_w
 
 
 def l1_reg(img, constant=0.5):
-    return torch.mean(torch.abs(img - constant))
+    return torch.sum(torch.abs(img - constant))
 
 
 def blur_reg(x, w=3):

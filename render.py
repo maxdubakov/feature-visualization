@@ -4,7 +4,7 @@ from tqdm import tqdm
 import torch.nn as nn
 from torchvision.models import GoogLeNet_Weights
 
-from model import googlenet
+from model import googlenet, global_step_tracker
 
 global_step = 0
 
@@ -56,19 +56,22 @@ def visualize(model, image, activation, channel_nr, regularizers, transformation
 
 # Render function
 def render_vis(
-        channel,
+        channel: str,
         optimizer,
-        image,
+        image: ParameterizedImage,
         regularizers=[],
         transformations=None,
         visualize=visualize,
-        num_iterations=2560,
+        thresholds=None,
         device='cpu'):
     global global_step
     global_step = 0
 
     layer, branch, channel_nr = tuple(channel.split(':'))
     channel_nr = int(channel_nr)
+
+    if thresholds is None:
+        thresholds = [1, 32, 128, 256, 2048, 2559]
 
     # init the model
     model = googlenet(weights=GoogLeNet_Weights.IMAGENET1K_V1).eval()
@@ -89,13 +92,14 @@ def render_vis(
     else:
         getattr(target_layer, branch).bn.register_forward_hook(get_activation())
 
-    thresholds = [1, 32, 128, 256, 2048, 2559]
     images = []
+    num_iterations = thresholds[-1] + 1
     pbar = tqdm(range(num_iterations), total=num_iterations)
     for i in pbar:
         optimizer.zero_grad()
         loss = visualize(model, image, activation, channel_nr, regularizers, transformations)
         optimizer.step()
+        global_step_tracker.increment()
 
         pbar.set_postfix({'loss': f'{loss:.4f}'})
         global_step += 1

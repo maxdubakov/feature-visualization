@@ -10,9 +10,7 @@ from torchvision.models import GoogLeNet_Weights
 
 from torchvision.models._utils import _ovewrite_named_param, handle_legacy_interface
 
-
-__all__ = ["GoogLeNet", "GoogLeNetOutputs", "_GoogLeNetOutputs", "GoogLeNet_Weights", "googlenet"]
-
+__all__ = ["GoogLeNet", "GoogLeNetOutputs", "_GoogLeNetOutputs", "GoogLeNet_Weights", "googlenet", "global_step_tracker"]
 
 GoogLeNetOutputs = namedtuple("GoogLeNetOutputs", ["logits", "aux_logits2", "aux_logits1"])
 GoogLeNetOutputs.__annotations__ = {"logits": Tensor, "aux_logits2": Optional[Tensor], "aux_logits1": Optional[Tensor]}
@@ -22,18 +20,33 @@ GoogLeNetOutputs.__annotations__ = {"logits": Tensor, "aux_logits2": Optional[Te
 _GoogLeNetOutputs = GoogLeNetOutputs
 
 
+class GlobalStepTracker(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.global_step = nn.Parameter(torch.tensor(0), requires_grad=False)
+
+    def increment(self):
+        self.global_step += 1
+
+    def get_step(self):
+        return self.global_step
+
+
+global_step_tracker = GlobalStepTracker()
+
+
 class GoogLeNet(nn.Module):
     __constants__ = ["aux_logits", "transform_input"]
 
     def __init__(
-        self,
-        num_classes: int = 1000,
-        aux_logits: bool = True,
-        transform_input: bool = False,
-        init_weights: Optional[bool] = None,
-        blocks: Optional[List[Callable[..., nn.Module]]] = None,
-        dropout: float = 0.2,
-        dropout_aux: float = 0.7,
+            self,
+            num_classes: int = 1000,
+            aux_logits: bool = True,
+            transform_input: bool = False,
+            init_weights: Optional[bool] = None,
+            blocks: Optional[List[Callable[..., nn.Module]]] = None,
+            dropout: float = 0.2,
+            dropout_aux: float = 0.7,
     ) -> None:
         super().__init__()
         if blocks is None:
@@ -178,15 +191,15 @@ class GoogLeNet(nn.Module):
 
 class Inception(nn.Module):
     def __init__(
-        self,
-        in_channels: int,
-        ch1x1: int,
-        ch3x3red: int,
-        ch3x3: int,
-        ch5x5red: int,
-        ch5x5: int,
-        pool_proj: int,
-        conv_block: Optional[Callable[..., nn.Module]] = None,
+            self,
+            in_channels: int,
+            ch1x1: int,
+            ch3x3red: int,
+            ch3x3: int,
+            ch5x5red: int,
+            ch5x5: int,
+            pool_proj: int,
+            conv_block: Optional[Callable[..., nn.Module]] = None,
     ) -> None:
         super().__init__()
         if conv_block is None:
@@ -225,11 +238,11 @@ class Inception(nn.Module):
 
 class InceptionAux(nn.Module):
     def __init__(
-        self,
-        in_channels: int,
-        num_classes: int,
-        conv_block: Optional[Callable[..., nn.Module]] = None,
-        dropout: float = 0.7,
+            self,
+            in_channels: int,
+            num_classes: int,
+            conv_block: Optional[Callable[..., nn.Module]] = None,
+            dropout: float = 0.7,
     ) -> None:
         super().__init__()
         if conv_block is None:
@@ -260,43 +273,43 @@ class InceptionAux(nn.Module):
 
 class RedirectedReLU(torch.autograd.Function):
 
-  @staticmethod
-  def forward(ctx, input_tensor):
-    ctx.save_for_backward(input_tensor)
-    return input_tensor.clamp(min=0)
+    @staticmethod
+    def forward(ctx, input_tensor):
+        ctx.save_for_backward(input_tensor)
+        return input_tensor.clamp(min=0)
 
-  @staticmethod
-  def backward(ctx, grad_output):
-    input_tensor, = ctx.saved_tensors
+    @staticmethod
+    def backward(ctx, *grad_outputs):
+        global global_step_tracker
 
-    # Compute ReLU gradient
-    relu_grad = torch.where(input_tensor < 0, torch.zeros_like(grad_output), grad_output)
+        grad_output = torch.stack(grad_outputs)
+        input_tensor, = ctx.saved_tensors
 
-    # Compute redirected gradient
-    neg_pushing_lower = (input_tensor < 0) & (grad_output > 0)
-    redirected_grad = torch.where(neg_pushing_lower, torch.zeros_like(grad_output), grad_output)
+        # Compute ReLU gradient
+        relu_grad = torch.where(input_tensor < 0, torch.zeros_like(grad_output), grad_output)
 
-    # Ensure we have at least a rank 2 tensor
-    assert relu_grad.dim() > 1, f"Expected rank > 1, got {relu_grad.dim()}"
+        # Compute redirected gradient
+        neg_pushing_lower = (input_tensor < 0) & (grad_output > 0)
+        redirected_grad = torch.where(neg_pushing_lower, torch.zeros_like(grad_output), grad_output)
 
-    # Compute gradient magnitude for each item in batch
-    batch_size = relu_grad.size(0)
-    reshaped_relu_grad = relu_grad.view(batch_size, -1)
-    relu_grad_mag = torch.norm(reshaped_relu_grad, dim=1)
+        # Ensure we have at least a rank 2 tensor
+        assert relu_grad.dim() > 1, f"Expected rank > 1, got {relu_grad.dim()}"
 
-    # Use redirected gradient where nothing got through original gradient
-    result_grad = torch.where(relu_grad_mag.view(-1, *[1] * (relu_grad.dim() - 1)) > 0,
-                              relu_grad,
-                              redirected_grad)
+        # Compute gradient magnitude for each item in batch
+        batch_size = relu_grad.size(0)
+        reshaped_relu_grad = relu_grad.view(batch_size, -1)
+        relu_grad_mag = torch.norm(reshaped_relu_grad, dim=1)
 
-    # Switch back to normal ReLU grad after 16 steps
-    global_step = torch.tensor(0)  # This should be updated in your training loop
-    return_relu_grad = global_step > 16
-    return_relu_grad = return_relu_grad.expand_as(relu_grad)
+        # Use redirected gradient where nothing got through original gradient
+        result_grad = torch.where(relu_grad_mag.view(-1, *[1] * (relu_grad.dim() - 1)) > 0,
+                                  relu_grad,
+                                  redirected_grad)
 
-    final_grad = torch.where(return_relu_grad, relu_grad, result_grad)
+        # Switch back to normal ReLU grad after 16 steps
+        return_relu_grad = global_step_tracker.get_step() > 16
 
-    return final_grad
+        final_grad = torch.where(return_relu_grad, relu_grad, result_grad)
+        return final_grad
 
 
 redirected_relu = RedirectedReLU.apply
@@ -311,8 +324,8 @@ class BasicConv2d(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         x = self.conv(x)
         x = self.bn(x)
-        x = F.relu(x, inplace=True)
-        return redirected_relu(x)
+        x = redirected_relu(x)
+        return x
 
 
 @handle_legacy_interface(weights=("pretrained", GoogLeNet_Weights.IMAGENET1K_V1))
