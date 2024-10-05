@@ -13,45 +13,43 @@ def pixel_image(shape, sd=0.01):
     return np.random.normal(size=shape, scale=sd).astype(np.float32)
 
 
-def scale_input(image, image_value_range=(-117, 255-117)):
-    lo, hi = image_value_range
-    image = lo + image * (hi - lo)
-
-    return image
-
-
 class ParameterizedImage(nn.Module):
-    def __init__(self, w, h=None, batch=1, sd=0.01, channels=3):
+    def __init__(self, w, h=None, batch=1, image_value_range=(-117, 255-117), sd=0.01, channels=3, device='cpu'):
         super().__init__()
         h = h or w
         shape = [batch, channels, h, w]
         init_val = pixel_image(shape, sd=sd)
-        normalized_init_val = scale_input(torch.sigmoid(torch.tensor(init_val)))
-        self.param = nn.Parameter(normalized_init_val)
+        self.register_buffer('low', torch.tensor(image_value_range[0], device=device))
+        self.register_buffer('high', torch.tensor(image_value_range[1], device=device))
+
+        self.param = nn.Parameter(torch.tensor(init_val))
+
 
     def forward(self):
-        return self.param
+        x = torch.sigmoid(self.param)
+        scaled = self.low + x * (self.high - self.low)
+        return x, scaled
 
 
 # function where we perform forward pass, extract average activation (as a single number) and return negation of it
 # negation because we have to _maximize_ the objective and _minimize_ the loss
 # so if loss will go from 15 to 7 (lowering), objective will go from -15 to -7 (growing)
 def visualize(model, image, activation, channel_nr, regularizers, transformations):
-    image_params = image()
+    image_params, image_params_scaled = image()
 
     if transformations is None:
         transformations = nn.Identity() # no-op
 
-    transformed_image = transformations(image_params)
+    transformed_image = transformations(image_params_scaled)
 
     model(transformed_image)  # Forward pass
     loss = -activation['target'][0, channel_nr].mean()
 
     for reg in regularizers:
-        loss += reg['weight'] * reg['func'](image_params)
+        loss += reg['weight'] * reg['func'](image_params_scaled)
 
     loss.backward()
-    return loss.item()
+    return image_params, loss.item()
 
 
 # Render function
@@ -63,9 +61,14 @@ def render_vis(
         transformations=None,
         visualize=visualize,
         thresholds=None,
+        use_fixed_seed=True,
         device='cpu'):
     global global_step
     global_step = 0
+
+    if use_fixed_seed:
+        np.random.seed(0)
+        torch.manual_seed(0)
 
     layer, branch, channel_nr = tuple(channel.split(':'))
     channel_nr = int(channel_nr)
@@ -97,7 +100,7 @@ def render_vis(
     pbar = tqdm(range(num_iterations), total=num_iterations)
     for i in pbar:
         optimizer.zero_grad()
-        loss = visualize(model, image, activation, channel_nr, regularizers, transformations)
+        image_params, loss = visualize(model, image, activation, channel_nr, regularizers, transformations)
         optimizer.step()
         global_step_tracker.increment()
 
@@ -105,12 +108,14 @@ def render_vis(
         global_step += 1
 
         if i in thresholds:
-            img_np = (image()
+            image.eval()
+            img_np = (image_params
                       .squeeze()  # remove batch dimension
                       .detach()  # detach from graph (will not be included in autograd and never require the gradient)
                       .cpu()  # from mps/cuda -> cpu
                       .numpy()  # to numpy array instead of pytorch.Tensor
                       )
             images.append(np.copy(img_np))
+            image.train()
 
     return images, thresholds
