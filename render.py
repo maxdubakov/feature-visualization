@@ -13,20 +13,86 @@ def pixel_image(shape, sd=0.01):
     return np.random.normal(size=shape, scale=sd).astype(np.float32)
 
 
+def rfft2d_freqs(h, w):
+    """Computes 2D spectrum frequencies."""
+
+    fy = np.fft.fftfreq(h)[:, None]
+    # when we have an odd input dimension we need to keep one additional
+    # frequency and later cut off 1 pixel
+    if w % 2 == 1:
+        fx = np.fft.fftfreq(w)[: w // 2 + 2]
+    else:
+        fx = np.fft.fftfreq(w)[: w // 2 + 1]
+    return np.sqrt(fx * fx + fy * fy)
+
+
 class ParameterizedImage(nn.Module):
-    def __init__(self, w, h=None, batch=1, image_value_range=(-117, 255-117), sd=0.01, channels=3, device='cpu'):
+    def __init__(self,
+                 w,
+                 h=None,
+                 fft=True,
+                 decorrelate=True,
+                 decay_power=1,
+                 batch=1,
+                 image_value_range=(-117/255, (255-117)/255),
+                 sd=0.01,
+                 channels=3,
+                 device='cpu'):
         super().__init__()
         h = h or w
         shape = [batch, channels, h, w]
+        self.w = w
+        self.h = h
+        self.batch = batch
+        self.channels = channels
+        self.fft = fft
+        self.decay_power = decay_power
+        self.decorrelate = decorrelate
+
+        if fft:
+            self.freqs = rfft2d_freqs(h, w)
+            shape = (batch, channels, 2) + self.freqs.shape
         init_val = pixel_image(shape, sd=sd)
         self.register_buffer('low', torch.tensor(image_value_range[0], device=device))
         self.register_buffer('high', torch.tensor(image_value_range[1], device=device))
 
+        # fft
+        self.freqs = rfft2d_freqs(h, w)
+
         self.param = nn.Parameter(torch.tensor(init_val))
+
+        # Color decorrelation matrix
+        if decorrelate:
+            color_correlation_svd_sqrt = torch.tensor([
+                [0.26, 0.09, 0.02],
+                [0.27, 0.00, -0.05],
+                [0.27, -0.09, 0.03]
+            ], dtype=torch.float32)
+            max_norm_svd_sqrt = torch.norm(color_correlation_svd_sqrt, dim=0).max()
+            self.color_correlation_normalized = color_correlation_svd_sqrt / max_norm_svd_sqrt
+
+            self.color_mean = torch.tensor([0.48, 0.46, 0.41])
 
 
     def forward(self):
-        x = torch.sigmoid(self.param)
+        x = self.param
+
+        if self.fft:
+            spectrum_t = torch.complex(x[:, :, 0], x[:, :, 1])
+            scale = 1.0 / np.maximum(self.freqs, 1.0 / max(self.w, self.h)) ** self.decay_power
+            scale *= np.sqrt(self.w * self.h)
+            scale = torch.from_numpy(scale).float()
+            scaled_spectrum_t = scale * spectrum_t
+            x = torch.fft.irfft2(scaled_spectrum_t, s=(self.h, self.w))
+            x = x[:self.batch, :self.channels, :self.h, :self.w]
+            x = x / 4.0  # TODO: is that a magic constant?
+
+        if self.decorrelate:
+            x_flat = x.reshape(-1, 3)
+            x_flat = torch.matmul(x_flat, self.color_correlation_normalized.t().to(x.device))
+            x = x_flat.reshape(x.shape)
+
+        x = torch.sigmoid(x)
         scaled = self.low + x * (self.high - self.low)
         return x, scaled
 

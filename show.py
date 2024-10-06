@@ -126,7 +126,7 @@ def __image_url(array, fmt='png', quality=90, domain=None):
     return "data:image/" + fmt.upper() + ";base64," + base64_byte_string
 
 
-def show_result_html(_imgs, _thresholds, fmt='png', quality=90, domain=None):
+def show_result_html(_imgs, _thresholds, fmt='png', quality=70, domain=(0, 1)):
     s = '<div style="display: flex; flex-direction: row;">'
     for i, img in enumerate(_imgs):
         img_resized = nd.zoom(img, [1, 2, 2], order=0)
